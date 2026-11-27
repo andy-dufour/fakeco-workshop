@@ -35,7 +35,7 @@ TOOLS = {
 # service -> (agent name, its ask tool, what the Concierge is told about it, its backend tools)
 SPECIALISTS = {
     "portfolio-specialist": ("PortfolioSpecialist", "ask_portfolio_specialist", "Ask the portfolio specialist about holdings, allocation and valuations.",
-                             ["get_portfolio_breakdown", "list_assets", "get_asset_valuation"]),
+                             ["get_portfolio_breakdown", "list_assets", "get_asset_positions"]),
     "trades-specialist": ("TradesSpecialist", "ask_trades_specialist", "Ask the trades specialist to list or change pending trades.", ["list_pending_trades", "propose_trade_change", "apply_trade_change"]),
     "transfers-specialist": ("TransfersSpecialist", "ask_transfers_specialist", "Ask the transfers specialist to add or withdraw cash.", ["propose_transfer", "apply_transfer"]),
     "rebalance-specialist": ("RebalanceSpecialist", "ask_rebalance_specialist", "Hand a rebalance to the rebalance specialist, with every chip answer and the confirmation.", ["propose_rebalance", "apply_rebalance"]),
@@ -43,7 +43,7 @@ SPECIALISTS = {
 }
 SYSTEM = {
     "PortfolioSpecialist": "You retrieve and summarize a verified customer's holdings and valuations using the provided tools only. Never estimate or invent a value you have not retrieved. "
-                           "list_assets returns the asset ids of an account; get_asset_valuation values one asset at a time.",
+                           "list_assets returns the assets of an account; get_asset_positions returns the position of many assets, by name, in one call.",
     "TradesSpecialist": "You list, propose changes to and apply changes to a customer's pending trades using the provided tools only. Never apply a change the customer has not confirmed.",
     "TransfersSpecialist": "You prepare and submit deposits and withdrawals using the provided tools only. Propose first, and submit only after the customer confirms the amount.",
     "TicketSpecialist": "You tell a customer where a ticket stands, using the check_ticket tool only. A ticket is the receipt for a trade, a transfer or a rebalance that was handed to the back office. "
