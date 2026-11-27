@@ -1,0 +1,52 @@
+# The seed job fills the database once (it does nothing when the database is already seeded). The services wait for it.
+# The load generators are Deployments; operations turns them on and off in the web app, or scale them to 0 to stop them completely.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: fakeco-services:dev
+          imagePullPolicy: IfNotPresent
+          args: ["fakeco.seed"]
+          envFrom:
+            - configMapRef: {name: fakeco}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 300Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  labels: {app: loadgen}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen}
+  template:
+    metadata:
+      labels: {app: loadgen}
+    spec:
+      containers:
+        - name: loadgen
+          image: fakeco-services:dev
+          imagePullPolicy: IfNotPresent
+          args: ["fakeco.loadgen"]
+          envFrom:
+            - configMapRef: {name: fakeco}
+          env:
+            - {name: SERVICE_NAME, value: loadgen}
+            - name: K8S_POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: K8S_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - {name: OTEL_RESOURCE_ATTRIBUTES, value: "k8s.namespace.name=$(K8S_NAMESPACE),k8s.deployment.name=loadgen,k8s.pod.name=$(K8S_POD_NAME)"}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 300Mi}

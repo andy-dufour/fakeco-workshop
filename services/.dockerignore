@@ -1,0 +1,5 @@
+*
+!requirements.txt
+!fakeco
+**/__pycache__
+**/*.pyc

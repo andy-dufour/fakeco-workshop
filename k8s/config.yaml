@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fakeco
+---
+# Settings every Python pod gets. Nothing secret is here: the Honeycomb keys are in the Secret `honeycomb`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fakeco
+data:
+  DATABASE_URL: postgresql://fakeco:fakeco@postgres:5432/fakeco
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  FAKECO_ENV: demo
+  # 1 is the speed of a real model call (seconds per answer). Lower it, for example 0.3, for quicker chats.
+  FAKECO_MODEL_SPEED: "1"
+  # The model of every agent (spans, cost in Honeycomb, and latency: Sonnet takes 1.7 times as long as Haiku, Opus 3 times, model.MODEL_WEIGHTS).
+  # FAKECO_AGENT_MODELS overrides it per agent: Agent=model pairs separated by commas, for example
+  # "PortfolioSpecialist=claude-opus-4-1-20250805,Concierge=claude-sonnet-4-5-20250929". The agents are Concierge, PortfolioSpecialist,
+  # TradesSpecialist, TransfersSpecialist, RebalanceSpecialist and TicketSpecialist. Restart the agent pods after a change
+  # (README.md, "Which agent uses which model", has the commands and the time limits a slow model runs into).
+  FAKECO_MODEL_NAME: claude-haiku-4-5-20251001
+  FAKECO_AGENT_MODELS: "Concierge=claude-sonnet-4-5-20250929,PortfolioSpecialist=claude-sonnet-4-5-20250929"
+  # "off": starting a story makes no Honeycomb marker (its title tells the audience which faults are on). Restart concierge-api after a change.
+  FAKECO_STORY_MARKERS: "off"
+  # Stories (names from services/fakeco/stories.py, separated by commas) that put a "deploy <random build id>" marker in Honeycomb when they
+  # start, as if a release went out. Empty: none. A misspelled name is ignored. Restart concierge-api after a change.
+  FAKECO_STORY_BUILD_MARKERS: ""
+  # "on": changing a fault flag puts app.fault.name and app.fault.active on the request's span, which names the fault. Restart concierge-api after a change.
+  FAKECO_FAULT_ATTRIBUTES: "off"
+  # The demo gate (fakeco/gate.py): a username and password for the web pages and /api (not /otlp). The users are in the Secret `web-gate`
+  # (scripts/gate-users.sh). "off" lets everyone in. Restart the web pod after a change: kubectl -n fakeco rollout restart deploy/web
+  FAKECO_GATE_ENABLED: "off"
+  # How long a sign-in lasts, in hours.
+  FAKECO_GATE_SESSION_HOURS: "12"

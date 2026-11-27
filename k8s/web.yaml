@@ -1,0 +1,69 @@
+# The React app behind nginx. It is the only way in from outside: /api goes to concierge-api, /otlp to the collector.
+# The pages and /api need a username and password: the container `gate` (fakeco/gate.py) says yes or no for nginx. The users are the key
+# `users` of the Secret `web-gate`, which scripts/gate-users.sh edits (not in this kustomization: an apply must never overwrite it).
+# Port 8081 of nginx has no gate; only the ClusterIP Service web-internal reaches it (the browser load generator uses it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels: {app: web}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+        - name: web
+          image: fakeco-web:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: API_UPSTREAM, value: "http://concierge-api:8080"}
+            - {name: OTLP_UPSTREAM, value: "http://otel-collector:4318"}
+          ports: [{containerPort: 8080}, {containerPort: 8081}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 128Mi}
+        - name: gate
+          image: fakeco-services:dev
+          imagePullPolicy: IfNotPresent
+          args: ["fakeco.gate", "serve"]
+          env:
+            - {name: FAKECO_GATE_ENABLED, valueFrom: {configMapKeyRef: {name: fakeco, key: FAKECO_GATE_ENABLED, optional: true}}}
+            - {name: FAKECO_GATE_SESSION_HOURS, valueFrom: {configMapKeyRef: {name: fakeco, key: FAKECO_GATE_SESSION_HOURS, optional: true}}}
+          volumeMounts:
+            - {name: gate, mountPath: /etc/gate, readOnly: true}
+          # the gate listens on 127.0.0.1 only, which the kubelet's HTTP probe (it goes to the pod IP) cannot reach
+          readinessProbe:
+            exec: {command: ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/gate/login')"]}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: {cpu: 5m, memory: 24Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        # optional: without the Secret nobody gets in until scripts/gate-users.sh adds the first user
+        - name: gate
+          secret: {secretName: web-gate, optional: true}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  type: NodePort
+  selector: {app: web}
+  ports: [{port: 8080, targetPort: 8080, nodePort: 30080}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-internal
+spec:
+  selector: {app: web}
+  ports: [{port: 8081, targetPort: 8081}]

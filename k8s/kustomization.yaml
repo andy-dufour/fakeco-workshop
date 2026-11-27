@@ -1,0 +1,20 @@
+# kubectl apply -k k8s
+# The Secret `honeycomb` is not here on purpose: you make it, and an apply must never overwrite it.
+# There is no collector here on purpose: you build it. The services send OTLP/HTTP to http://otel-collector:4318.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fakeco
+resources:
+  - config.yaml
+  - postgres.yaml
+  - services.generated.yaml
+  - jobs.yaml
+  - web.yaml
+# No rollback history: Kubernetes keeps up to 10 old ReplicaSets per Deployment at 0 pods, and k8s_cluster reports each of them every
+# minute, to main and to every class team of the fan-out. With 0 a rollout deletes the old one (no `kubectl rollout undo`; redeploy instead).
+patches:
+  - target: {kind: Deployment}
+    patch: |-
+      - op: add
+        path: /spec/revisionHistoryLimit
+        value: 0
