@@ -95,7 +95,7 @@ def build():
             run = loop.run(agent, [{"role": "user", "content": body.question}], _base(body.conversation_id, body.customer), on_start=started.append)
             if agent.name == "PortfolioSpecialist" and policies.intent(body.question)[0] == "valuation":
                 # a valuation run, as in a real agent server: when the caller hangs up (the customer gave up, or the Concierge stopped waiting), the run
-                # goes on to the end, valuing assets and paying for model calls nobody reads. It ends after the request that started it.
+                # goes on to the end, valuing assets and paying for model calls nobody reads. Its invoke_agent span ends after its parent and is tagged.
                 task = asyncio.create_task(run)
                 try:
                     res = await or_disconnect(request, asyncio.shield(task))

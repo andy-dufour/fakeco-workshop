@@ -2,7 +2,7 @@
 
 create() takes and returns the shape of the Anthropic Messages API, so a real provider can be put behind the same call later. What the scripted model
 "decides" comes from agents/policies.py; this module simulates the rest of a model call: token counts, latency, the context window, HTTP 429 with a
-retry, and a call that hangs. The only span it makes is the HTTP request to the provider, as an HTTP client library would.
+retry, and a call that hangs. Every span it makes carries app.model.simulated=true.
 """
 import asyncio, json, math, os, random, secrets
 
@@ -11,6 +11,7 @@ from opentelemetry.trace import SpanKind
 from . import config, faults, telemetry
 
 OVERHEAD_TOKENS = {"Concierge": 960}   # the tool definitions and framing of a request; the specialists have fewer tools
+MAX_RECORDED_CHARS = 30_000            # the history is written on a span only this far back (the token counts are of the whole history)
 SIMULATED = {"app.model.simulated": True}
 _ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZabcdefghjkmnpqrstvwxyz0123456789"
 # How much slower than Haiku a model family is, on every part of a call (prompt, reasoning, output), by the first family named in the model id.
@@ -61,6 +62,18 @@ def parts(messages):
     return out
 
 
+def recorded(msgs, cap=MAX_RECORDED_CHARS):
+    """The messages as written on a span: when the history is longer than `cap` characters, the oldest messages are left out and replaced by a note."""
+    sizes = [len(jd(m)) for m in msgs]
+    if sum(sizes) <= cap:
+        return msgs
+    i, used = len(msgs), 0
+    while i > 1 and used + sizes[i - 1] <= cap:
+        i -= 1
+        used += sizes[i]
+    return [{"role": "system", "parts": [{"type": "text", "content": f"[instrumentation truncated {i} earlier messages]"}]}] + msgs[i:]
+
+
 async def _post(status, seconds, error=None):
     """One HTTP request to the provider, as a span. Nothing is sent."""
     with telemetry.tracer().start_as_current_span("POST", kind=SpanKind.CLIENT, attributes={
@@ -70,28 +83,45 @@ async def _post(status, seconds, error=None):
             telemetry.fail(sp, str(status), error)
 
 
-async def create(agent, system, messages, tools, decide, *, stall=False):
-    """One model call. `decide(system, messages, tools)` returns the content blocks of the answer.
+async def create(agent, system, messages, tools, decide, *, attrs=None, stall=False):
+    """One model call, in a `chat <model>` span. `decide(system, messages, tools)` returns the content blocks of the answer.
     stall: the provider never answers (the caller gives up and cancels). Raises ModelError when the request is rejected."""
-    in_tok = OVERHEAD_TOKENS.get(agent, 620) + max(1, len(jd(parts(messages))) // 4)
+    shown = parts(messages)
+    in_tok = OVERHEAD_TOKENS.get(agent, 620) + max(1, len(jd(shown)) // 4)
     name = config.model_for(agent)
-    if stall:
-        await asyncio.Event().wait()
-    if in_tok > config.CONTEXT_LIMIT_TOKENS:   # rejected before anything is generated
-        message = f"prompt is too long: {in_tok} tokens > {config.CONTEXT_LIMIT_TOKENS} maximum"
-        await _post(400, random.uniform(.4, .9), message)
-        raise ModelError("ContextWindowExceededError", message, 400)
-    content = decide(system, messages, tools)
-    out_tok = max(1, len(jd(content)) // 4)
-    reason = "tool_use" if any(b["type"] == "tool_use" for b in content) else "end_turn"
-    if await faults.hit("model_rate_limit"):
-        await _post(429, random.uniform(.06, .15), "provider rate limit (HTTP 429)")
-        await asyncio.sleep(random.uniform(.5, 1.5) * speed())
-    # latency as on a real provider, for Haiku: reading the prompt (about 1 s per 25k input tokens), reasoning over the tool results that just came
-    # back (about 1.3 s each), then writing the answer (6 ms per output token); a slower model takes its MODEL_WEIGHTS times as long
-    results = sum(1 for b in messages[-1]["content"] if b.get("type") == "tool_result") if isinstance(messages[-1]["content"], list) else 0
-    noise, factor = math.exp(random.gauss(0, .22)), await faults.factor("model_slow") * weight(name)
-    first = (.6 + in_tok / 25_000 + 1.3 * results) * noise * factor   # until the first token
-    await _post(200, first + 6 * out_tok / 1000 * noise * factor)
-    return {"id": new_id("msg_"), "role": "assistant", "model": name, "content": content, "stop_reason": reason,
-            "usage": {"input_tokens": in_tok, "output_tokens": out_tok}}
+    with telemetry.tracer().start_as_current_span(f"chat {name}", kind=SpanKind.CLIENT, attributes={
+            **(attrs or {}), "gen_ai.operation.name": "chat", "gen_ai.agent.name": agent, "gen_ai.request.model": name, "gen_ai.response.model": name,
+            "gen_ai.request.stream": True, "gen_ai.input.messages": jd(recorded(shown)), **SIMULATED}, record_exception=False, set_status_on_exception=False) as sp:
+        try:
+            if stall:
+                await asyncio.Event().wait()
+            usage = {"gen_ai.usage.input_tokens": in_tok, "gen_ai.usage.output_tokens": 0, "gen_ai.usage.cache_read.input_tokens": 0, "gen_ai.usage.cache_creation.input_tokens": 0}
+            if in_tok > config.CONTEXT_LIMIT_TOKENS:   # rejected before anything is generated; the input was counted
+                message = f"prompt is too long: {in_tok} tokens > {config.CONTEXT_LIMIT_TOKENS} maximum"
+                await _post(400, random.uniform(.4, .9), message)
+                sp.set_attributes(usage)
+                telemetry.fail(sp, "ContextWindowExceededError", message)
+                raise ModelError("ContextWindowExceededError", message, 400)
+            content = decide(system, messages, tools)
+            out_tok = max(1, len(jd(content)) // 4)
+            reason = "tool_use" if any(b["type"] == "tool_use" for b in content) else "end_turn"
+            if await faults.hit("model_rate_limit"):
+                await _post(429, random.uniform(.06, .15), "provider rate limit (HTTP 429)")
+                sp.set_attribute("gen_ai.request.retries", 1)
+                await asyncio.sleep(random.uniform(.5, 1.5) * speed())
+            # latency as on a real provider, for Haiku: reading the prompt (about 1 s per 25k input tokens), reasoning over the tool results that just came
+            # back (about 1.3 s each), then writing the answer (6 ms per output token); a slower model takes its MODEL_WEIGHTS times as long
+            results = sum(1 for b in messages[-1]["content"] if b.get("type") == "tool_result") if isinstance(messages[-1]["content"], list) else 0
+            noise, factor = math.exp(random.gauss(0, .22)), await faults.factor("model_slow") * weight(name)
+            first = (.6 + in_tok / 25_000 + 1.3 * results) * noise * factor   # until the first token
+            seconds = first + 6 * out_tok / 1000 * noise * factor
+            await _post(200, seconds)
+            sp.set_attributes({**usage, "gen_ai.usage.output_tokens": out_tok, "gen_ai.output.messages": jd([{**parts([{"role": "assistant", "content": content}])[0], "finish_reason": reason}]),
+                               "gen_ai.response.finish_reasons": [reason], "gen_ai.response.id": (rid := new_id("msg_"))})
+            if reason == "end_turn":
+                sp.set_attribute("gen_ai.server.time_to_first_token", round(first, 2))
+            return {"id": rid, "role": "assistant", "model": name, "content": content, "stop_reason": reason,
+                    "usage": {"input_tokens": in_tok, "output_tokens": out_tok}}
+        except asyncio.CancelledError:
+            telemetry.fail(sp, "AbortError", "request aborted by caller")
+            raise

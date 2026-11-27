@@ -30,27 +30,33 @@ async def fake_backend(name, args):
 
 
 def whale_turn(monkeypatch):
-    """The result of a valuation run over 120 assets."""
+    """(result, input tokens of every model call) of a valuation run over 120 assets."""
+    spans, tp = InMemorySpanExporter(), TracerProvider()
+    tp.add_span_processor(SimpleSpanProcessor(spans))
+    monkeypatch.setattr(telemetry, "tracer", lambda: tp.get_tracer("test"))
     monkeypatch.setenv("FAKECO_MODEL_SPEED", "0")
     monkeypatch.setattr(tools, "backend", fake_backend)
 
     async def no_faults(name):
         return None
     monkeypatch.setattr(faults, "get", no_faults)
-    return asyncio.run(loop.run(tools.specialist("portfolio-specialist"), [{"role": "user", "content": QUESTION}], {}))
+    res = asyncio.run(loop.run(tools.specialist("portfolio-specialist"), [{"role": "user", "content": QUESTION}], {}))
+    chats = [s for s in spans.get_finished_spans() if s.name.startswith("chat ")]
+    return res, [s.attributes["gen_ai.usage.input_tokens"] for s in chats]
 
 
 def test_whale_valuation(monkeypatch):
-    res = whale_turn(monkeypatch)
-    if "get_asset_positions" in res.used:   # one bulk call
+    res, tokens = whale_turn(monkeypatch)
+    if "get_asset_positions" in res.used:   # one bulk call: a few thousand tokens
         assert res.used == ["list_assets", "get_asset_positions"] and res.outcome == "ok"
         assert res.answer == "All 120 assets are valued. Together they are worth $6,000.00."
+        assert max(tokens) < config.CONTEXT_LIMIT_TOKENS / 20
         bulk = next(c for c in res.calls if c["tool"] == "get_asset_positions")
         assert bulk["arguments"]["assets"] == [a["symbol"] for a in ASSETS]
         assert set(re.findall(r'"(\w+)":', bulk["result"])) == {"asset", "position"}
     else:                                   # one asset at a time: the history grows by every valuation until the model rejects it
         assert set(res.used) == {"list_assets", "get_asset_valuation"}
-        assert res.outcome == "context_overflow"
+        assert res.outcome == "context_overflow" and max(tokens) > config.CONTEXT_LIMIT_TOKENS
 
 
 def test_flag_changes_make_markers_that_name_nothing(monkeypatch):
