@@ -2,7 +2,8 @@
 # Variables: API_UPSTREAM (for example http://concierge-api:8080)
 #            OTLP_UPSTREAM (for example http://otel-collector:4318)
 #            GATE_UPSTREAM (the demo gate, python -m fakeco.gate serve; a sidecar of the pod: http://127.0.0.1:8090)
-# Only those three are substituted (see NGINX_ENVSUBST_FILTER in the Dockerfile);
+#            NGINX_LOCAL_RESOLVERS (set by the nginx image from /etc/resolv.conf). OTLP_UPSTREAM must be a full DNS name: nginx's resolver has no search list.
+# Only those four are substituted (see NGINX_ENVSUBST_FILTER in the Dockerfile);
 # nginx's own $variables stay as they are.
 #
 # Two listeners. 8080 is the public one: a username and password are needed for the pages and /api (the gate asks for them, see
@@ -77,7 +78,11 @@ server {
     # Browser and mobile telemetry: /otlp/v1/traces and /otlp/v1/logs -> ${OTLP_UPSTREAM}/v1/... Not behind the gate: the sign-in
     # page and the apps send before anyone has signed in.
     location /otlp/ {
-        proxy_pass ${OTLP_UPSTREAM}/;
+        # Resolved per request, not at start: the web app must come up before there is a collector (and without one, /otlp/ answers 502).
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+        set $otlp_upstream ${OTLP_UPSTREAM};
+        rewrite ^/otlp/(.*)$ /$1 break;
+        proxy_pass $otlp_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         client_max_body_size 4m;
@@ -130,7 +135,11 @@ server {
 
     # Browser telemetry: /otlp/v1/traces and /otlp/v1/logs -> ${OTLP_UPSTREAM}/v1/...
     location /otlp/ {
-        proxy_pass ${OTLP_UPSTREAM}/;
+        # Resolved per request, not at start: the web app must come up before there is a collector (and without one, /otlp/ answers 502).
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+        set $otlp_upstream ${OTLP_UPSTREAM};
+        rewrite ^/otlp/(.*)$ /$1 break;
+        proxy_pass $otlp_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         client_max_body_size 4m;
