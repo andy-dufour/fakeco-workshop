@@ -21,7 +21,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - {name: API_UPSTREAM, value: "http://concierge-api:8080"}
-            - {name: OTLP_UPSTREAM, value: "http://otel-collector:4318"}
+            - {name: OTLP_UPSTREAM, value: "http://otel-collector.fakeco.svc.cluster.local:4318"}
           ports: [{containerPort: 8080}, {containerPort: 8081}]
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
