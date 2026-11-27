@@ -16,7 +16,8 @@ FROM nginx:alpine
 ENV API_UPSTREAM=http://concierge-api:8080 \
     OTLP_UPSTREAM=http://otel-collector:4318 \
     GATE_UPSTREAM=http://127.0.0.1:8090 \
-    NGINX_ENVSUBST_FILTER='^(API|OTLP|GATE)_UPSTREAM$'
+    NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 \
+    NGINX_ENVSUBST_FILTER='^((API|OTLP|GATE)_UPSTREAM|NGINX_LOCAL_RESOLVERS)$'
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 RUN sed -i 's#^pid .*#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
